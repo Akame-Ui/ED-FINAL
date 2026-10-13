@@ -233,7 +233,7 @@ export default function AdminScreen() {
               <Text style={styles.count}>{item.count} attended</Text>
             </View>
           )}
-          ListEmptyComponent={<EmptyState title="No events yet" hint="Create one in the Teacher tab." art="no-results" />}
+          ListEmptyComponent={<EmptyState title="No events yet" hint="Create one in the Event tab." art="no-results" />}
         />
       ) : tab === 'users' ? (
         <FlatList
@@ -283,7 +283,7 @@ export default function AdminScreen() {
               </View>
             </View>
           )}
-          ListEmptyComponent={<EmptyState title="No events found" hint="Create one in the Teacher tab." art="no-results" />}
+          ListEmptyComponent={<EmptyState title="No events found" hint="Create one in the Event tab." art="no-results" />}
         />
       ) : (
         <FlatList

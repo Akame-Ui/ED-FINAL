@@ -8,6 +8,7 @@ import { StatusIcon } from '@/components/StatusIcon';
 import { Toast, type ToastData } from '@/components/Toast';
 import { UiIcon } from '@/components/UiIcon';
 import { COLORS } from '@/constants/colors';
+import { RADIUS, SHADOW } from '@/constants/ui';
 import { useAuth } from '@/lib/auth';
 import { registerAttendance, type RegisterResult } from '@/lib/attendance';
 import { parseQRPayload } from '@/lib/qr';
@@ -18,7 +19,7 @@ import { saveScanHistory } from '@/lib/scanHistory';
 const RESCAN_WINDOW_MS = 6000;
 
 // QR Attendance flow:
-// 1. Teacher/Admin creates an event (Teacher tab)  2. System generates a QR
+// 1. Admin creates an event (Event tab)  2. System generates a QR
 // 3. Student scans it here                          4. System validates event
 // 5. System records attendance                      6. Student gets confirmation
 export default function ScanScreen() {
@@ -168,14 +169,14 @@ const styles = StyleSheet.create({
   cornerTR: { top: 0, right: 0, borderTopWidth: 5, borderRightWidth: 5 },
   cornerBL: { bottom: 0, left: 0, borderBottomWidth: 5, borderLeftWidth: 5 },
   cornerBR: { bottom: 0, right: 0, borderBottomWidth: 5, borderRightWidth: 5 },
-  overlay: { position: 'absolute', left: 20, right: 20, bottom: 40, backgroundColor: COLORS.card, borderRadius: 16, borderWidth: 1, borderColor: COLORS.border, padding: 16, alignItems: 'center', gap: 10, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 12, elevation: 8 },
-  overlayHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  overlay: { position: 'absolute', left: 16, right: 16, bottom: 28, backgroundColor: COLORS.card, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: COLORS.border, padding: 20, alignItems: 'center', gap: 12, ...SHADOW.sheet },
+  overlayHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.primarySoft, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: `${COLORS.primary}26` },
   title: { fontSize: 20, fontWeight: '600', color: COLORS.textPrimary, marginBottom: 8, textAlign: 'center' },
   subtitle: { fontSize: 14, color: COLORS.textSecondary, textAlign: 'center', lineHeight: 20, marginBottom: 16 },
-  overlayText: { fontSize: 17, fontWeight: '700', color: COLORS.textPrimary, textAlign: 'center' },
-  helperText: { fontSize: 13, color: COLORS.textSecondary, textAlign: 'center', marginBottom: 4 },
-  confirmCard: { alignItems: 'center', gap: 6, paddingVertical: 8 },
-  confirmTitle: { fontSize: 16, textAlign: 'center', fontWeight: '800', color: COLORS.success },
+  overlayText: { fontSize: 15, fontWeight: '800', color: COLORS.primary, textAlign: 'center' },
+  helperText: { fontSize: 13, color: COLORS.textSecondary, textAlign: 'center', marginBottom: 4, lineHeight: 19 },
+  confirmCard: { alignItems: 'center', gap: 8, paddingVertical: 8 },
+  confirmTitle: { fontSize: 17, textAlign: 'center', fontWeight: '800', color: COLORS.success, letterSpacing: -0.2 },
   confirmTitleError: { fontSize: 14, textAlign: 'center', fontWeight: '700', color: COLORS.danger },
   confirmEvent: { fontSize: 15, fontWeight: '700', color: COLORS.textPrimary, textAlign: 'center' },
   confirmCode: { fontSize: 13, fontWeight: '700', color: COLORS.accent, textAlign: 'center' },

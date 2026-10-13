@@ -20,7 +20,7 @@ import { useRole } from '@/lib/auth';
 
 export default function AppTabs() {
   const { role } = useRole();
-  const showTeacher = role === 'teacher' || role === 'admin';
+  const showEvent = role === 'admin';
   const showAdmin = role === 'admin';
 
   return (
@@ -37,9 +37,9 @@ export default function AppTabs() {
           <TabTrigger name="history" href={'/(tabs)/history' as RelativePathString} asChild>
             <TabButton icon="history">History</TabButton>
           </TabTrigger>
-          {showTeacher ? (
+          {showEvent ? (
             <TabTrigger name="teacher" href={'/(tabs)/teacher' as RelativePathString} asChild>
-              <TabButton icon="teachers">Teacher</TabButton>
+              <TabButton icon="event">Event</TabButton>
             </TabTrigger>
           ) : null}
           {showAdmin ? (
@@ -56,7 +56,7 @@ export default function AppTabs() {
   );
 }
 
-export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlotProps & { icon: 'home' | 'teachers' | 'scan' | 'history' | 'profile' | 'admin' }) {
+export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlotProps & { icon: 'home' | 'event' | 'scan' | 'history' | 'profile' | 'admin' }) {
   return (
     <Pressable {...props} style={({ pressed }) => pressed && styles.pressed}>
       <ThemedView
@@ -66,8 +66,8 @@ export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlo
           name={
             icon === 'home'
               ? { ios: isFocused ? 'house.fill' : 'house', android: 'home', web: 'home' }
-              : icon === 'teachers'
-                ? { ios: isFocused ? 'person.2.fill' : 'person.2', android: 'school', web: 'school' }
+              : icon === 'event'
+                ? { ios: 'calendar', android: 'event', web: 'event' }
                 : icon === 'scan'
                   ? { ios: 'qrcode', android: 'qr_code_scanner', web: 'qr_code_scanner' }
                   : icon === 'history'

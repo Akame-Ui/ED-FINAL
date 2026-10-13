@@ -15,7 +15,6 @@ import {
   createEvent,
   deleteEvent,
   getAllEvents,
-  getEventsByTeacher,
   setEventStatus,
   updateEvent,
   type CloudEvent,
@@ -36,7 +35,7 @@ function formatDateTime(date: Date) {
   return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-// Teacher/Admin: Create an event • View events • Edit an event • Close/reopen
+// Admin only: Create an event • View events • Edit an event • Close/reopen
 // an event. Event fields: name, date, time (start/end pickers), venue,
 // description, status (open/closed).
 export default function TeacherScreen() {
@@ -80,10 +79,8 @@ export default function TeacherScreen() {
   const loadEvents = useCallback(async () => {
     if (!user) return;
     setListLoading(true);
-    const profile = await getProfile(user.id);
-    const r = profile?.role ?? 'student';
-    // Admins see every event; teachers see their own.
-    const rows = r === 'admin' ? await getAllEvents() : await getEventsByTeacher(user.id);
+    // Admin-only tab: admins see every event.
+    const rows = await getAllEvents();
     setEvents(rows);
     setListLoading(false);
   }, [user]);
@@ -229,12 +226,12 @@ export default function TeacherScreen() {
     return <LoadingState message="Checking your account…" />;
   }
 
-  if (role !== 'teacher' && role !== 'admin') {
+  if (role !== 'admin') {
     return (
       <View style={styles.lockScreen}>
         <SymbolView name={{ ios: 'lock.fill', android: 'lock', web: 'lock' }} tintColor={COLORS.primary} size={42} />
-        <Text style={styles.lockTitle}>Teachers Only</Text>
-        <Text style={styles.lockSubtitle}>Only teacher or admin accounts can manage events.</Text>
+        <Text style={styles.lockTitle}>Admins Only</Text>
+        <Text style={styles.lockSubtitle}>Only admin accounts can create and manage events.</Text>
       </View>
     );
   }
@@ -254,7 +251,7 @@ export default function TeacherScreen() {
       {mode === 'create' ? (
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
           <ScreenHeader
-            eyebrow="TEACHER EVENT"
+            eyebrow="EVENT"
             title="Create attendance QR"
             subtitle="Name, date, time, venue, description — status starts as open."
           />

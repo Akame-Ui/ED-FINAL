@@ -35,12 +35,12 @@ export default function AppTabs() {
         />
       </NativeTabs.Trigger>
 
-      {/* Teacher tab: visible to teachers + admins (they create/manage events). */}
-      <NativeTabs.Trigger name="teacher" hidden={role !== 'teacher' && role !== 'admin'}>
-        <NativeTabs.Trigger.Label>Teacher</NativeTabs.Trigger.Label>
+      {/* Event tab: admin only — create/manage events + QR. */}
+      <NativeTabs.Trigger name="teacher" hidden={role !== 'admin'}>
+        <NativeTabs.Trigger.Label>Event</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          sf={{ default: 'person.2', selected: 'person.2.fill' }}
-          md={{ default: 'school', selected: 'school' }}
+          sf={{ default: 'calendar', selected: 'calendar' }}
+          md={{ default: 'event', selected: 'event' }}
         />
       </NativeTabs.Trigger>
 
