@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { COLORS } from '@/constants/colors';
+import { EmptyState, ErrorNotice, SuccessNotice } from '@/components/feedback';
 import { useAuth } from '@/lib/auth';
 import { registerAttendance } from '@/lib/attendance';
 import { parseQRPayload } from '@/lib/qr';
@@ -101,8 +102,10 @@ export default function AttendScreen() {
   if (!parsed.ok) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Invalid QR Link</Text>
-        <Text style={styles.subtitle}>{(parsed as any).message ?? 'This QR does not contain a valid event.'}</Text>
+        <EmptyState
+          title="Invalid QR Link"
+          hint={(parsed as { message?: string }).message ?? 'This QR does not contain a valid event.'}
+        />
         <Pressable onPress={() => router.replace('/(tabs)')} style={styles.primaryBtn}>
           <Text style={styles.primaryBtnText}>Go Home</Text>
         </Pressable>
@@ -151,7 +154,11 @@ export default function AttendScreen() {
         </Pressable>
       </View>
 
-      {status && <Text style={[styles.status, success ? styles.success : styles.error]}>{status}</Text>}
+      {status && success ? (
+        <SuccessNotice title={status} detail="Your check-in was recorded." />
+      ) : status ? (
+        <ErrorNotice message={status} />
+      ) : null}
       {rawPayload && <Text style={styles.urlText}>{rawPayload}</Text>}
     </View>
   );
@@ -177,7 +184,7 @@ const styles = StyleSheet.create({
   primaryBtn: {
     height: 52,
     borderRadius: 12,
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },

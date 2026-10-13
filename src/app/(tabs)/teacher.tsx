@@ -2,15 +2,30 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { useFocusEffect } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useCallback, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 
 import { COLORS } from '@/constants/colors';
+import { EmptyState, ErrorNotice, LoadingState, StatusBadge, SuccessNotice } from '@/components/feedback';
+import { ScreenHeader } from '@/components/ScreenHeader';
+import { UiIcon } from '@/components/UiIcon';
 import { useAuth } from '@/lib/auth';
-import { createEvent, type Event } from '@/lib/events';
+import { sanitize, validateEventCode, validateRequired } from '@/lib/validation';
+import {
+  createEvent,
+  deleteEvent,
+  getAllEvents,
+  getEventsByTeacher,
+  setEventStatus,
+  updateEvent,
+  type CloudEvent,
+  type Event,
+} from '@/lib/events';
 import type { Role } from '@/lib/profiles';
 import { getProfile } from '@/lib/profiles';
 import { buildQRPayload } from '@/lib/qr';
+
+type Mode = 'create' | 'manage';
 
 function toLocalISO(date: Date) {
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -21,12 +36,20 @@ function formatDateTime(date: Date) {
   return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+// Teacher/Admin: Create an event • View events • Edit an event • Close/reopen
+// an event. Event fields: name, date, time (start/end pickers), venue,
+// description, status (open/closed).
 export default function TeacherScreen() {
   const { user } = useAuth();
   const [role, setRole] = useState<Role | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
+  const [mode, setMode] = useState<Mode>('create');
+
+  // Create-form state
   const [title, setTitle] = useState('');
   const [eventId, setEventId] = useState('');
+  const [venue, setVenue] = useState('');
+  const [description, setDescription] = useState('');
   const [startDate, setStartDate] = useState(() => new Date());
   const [endDate, setEndDate] = useState(() => new Date(Date.now() + 60 * 60 * 1000));
   const [editTarget, setEditTarget] = useState<'start' | 'end' | null>(null);
@@ -34,27 +57,42 @@ export default function TeacherScreen() {
   const [payload, setPayload] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  // Manage-list state
+  const [events, setEvents] = useState<CloudEvent[]>([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [selected, setSelected] = useState<CloudEvent | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editVenue, setEditVenue] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+
+  const loadRole = useCallback(() => {
+    if (!user) {
+      setRoleLoading(false);
+      return;
+    }
+    setRoleLoading(true);
+    void getProfile(user.id).then((profile) => {
+      setRole(profile?.role ?? 'student');
+      setRoleLoading(false);
+    });
+  }, [user]);
+
+  const loadEvents = useCallback(async () => {
+    if (!user) return;
+    setListLoading(true);
+    const profile = await getProfile(user.id);
+    const r = profile?.role ?? 'student';
+    // Admins see every event; teachers see their own.
+    const rows = r === 'admin' ? await getAllEvents() : await getEventsByTeacher(user.id);
+    setEvents(rows);
+    setListLoading(false);
+  }, [user]);
+
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-      if (!user) {
-        setRoleLoading(false);
-        return () => {
-          active = false;
-        };
-      }
-
-      setRoleLoading(true);
-      void getProfile(user.id).then((profile) => {
-        if (!active) return;
-        setRole(profile?.role ?? 'student');
-        setRoleLoading(false);
-      });
-
-      return () => {
-        active = false;
-      };
-    }, [user]),
+      loadRole();
+      void loadEvents();
+    }, [loadRole, loadEvents]),
   );
 
   const openPicker = (target: 'start' | 'end') => {
@@ -67,14 +105,12 @@ export default function TeacherScreen() {
       setEditTarget(null);
       return;
     }
-
     if (Platform.OS === 'android' && editingPart === 'date') {
       if (editTarget === 'start') setStartDate(selectedDate);
       else setEndDate(selectedDate);
       setEditingPart('time');
       return;
     }
-
     if (editTarget === 'start') setStartDate(selectedDate);
     else setEndDate(selectedDate);
     setEditTarget(null);
@@ -85,19 +121,27 @@ export default function TeacherScreen() {
   };
 
   const handleCreateEvent = async () => {
-    const event: Event = {
-      eventId: eventId.trim(),
-      title: title.trim(),
-      start: toLocalISO(startDate),
-      end: toLocalISO(endDate),
-    };
-
-    if (!event.eventId || !event.title) {
-      setMessage('All fields are required.');
+    // Input validation (length/format checked here, ownership enforced by RLS).
+    const codeError = validateEventCode(eventId);
+    if (codeError) {
+      setMessage(codeError);
       setPayload(null);
       return;
     }
-
+    const titleError = validateRequired(title, 'Event name', 120);
+    if (titleError) {
+      setMessage(titleError);
+      setPayload(null);
+      return;
+    }
+    const event: Event = {
+      eventId: eventId.trim(),
+      title: sanitize(title, 120),
+      start: toLocalISO(startDate),
+      end: toLocalISO(endDate),
+      venue: sanitize(venue, 120),
+      description: sanitize(description, 500),
+    };
     if (endDate.getTime() <= startDate.getTime()) {
       setMessage('Start time must be before end time.');
       setPayload(null);
@@ -111,99 +155,277 @@ export default function TeacherScreen() {
         setPayload(null);
         return;
       }
-      setMessage('Event saved! QR is a universal https:// link — scannable by iPhone Camera, Android, or any QR app, plus the in-app Scan tab.');
+      setMessage('Event saved! QR is a universal https:// link — scannable by any camera.');
       setPayload(buildQRPayload(event));
+      setTitle('');
+      setEventId('');
+      setVenue('');
+      setDescription('');
+      void loadEvents();
     } catch {
       setMessage('Could not save the event. Please try again.');
       setPayload(null);
     }
   };
 
+  const openDetail = (item: CloudEvent) => {
+    setSelected(item);
+    setEditTitle(item.title);
+    setEditVenue(item.venue ?? '');
+    setEditDescription(item.description ?? '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selected) return;
+    if (!editTitle.trim()) {
+      setMessage('Event name cannot be empty.');
+      return;
+    }
+    const { error } = await updateEvent(selected.id, {
+      title: editTitle.trim(),
+      venue: editVenue.trim() || null,
+      description: editDescription.trim() || null,
+    });
+    if (error) {
+      Alert.alert('Error', error);
+      return;
+    }
+    setSelected({ ...selected, title: editTitle.trim(), venue: editVenue.trim() || null, description: editDescription.trim() || null });
+    void loadEvents();
+  };
+
+  const handleToggleStatus = async () => {
+    if (!selected) return;
+    const next = selected.status === 'open' ? 'closed' : 'open';
+    const { error } = await setEventStatus(selected.id, next);
+    if (error) {
+      Alert.alert('Error', error);
+      return;
+    }
+    setSelected({ ...selected, status: next });
+    void loadEvents();
+  };
+
+  const handleDelete = (item: CloudEvent) => {
+    Alert.alert('Delete event', `${item.title} (${item.event_code})? Attendance rows delete too.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () =>
+          void (async () => {
+            const { error } = await deleteEvent(item.id);
+            if (error) Alert.alert('Error', error);
+            else {
+              if (selected?.id === item.id) setSelected(null);
+              void loadEvents();
+            }
+          })(),
+      },
+    ]);
+  };
+
   if (roleLoading) {
-    return (
-      <View style={styles.lockScreen}>
-        <Text style={styles.lockTitle}>Checking your account...</Text>
-      </View>
-    );
+    return <LoadingState message="Checking your account…" />;
   }
 
-  if (role !== 'teacher') {
+  if (role !== 'teacher' && role !== 'admin') {
     return (
       <View style={styles.lockScreen}>
         <SymbolView name={{ ios: 'lock.fill', android: 'lock', web: 'lock' }} tintColor={COLORS.primary} size={42} />
         <Text style={styles.lockTitle}>Teachers Only</Text>
-        <Text style={styles.lockSubtitle}>Only teacher accounts can create events.</Text>
+        <Text style={styles.lockSubtitle}>Only teacher or admin accounts can manage events.</Text>
       </View>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-      <Text style={styles.eyebrow}>TEACHER EVENT</Text>
-      <Text style={styles.title}>Create attendance QR</Text>
-      <Text style={styles.subtitle}>Set the event details, save it, and display the QR for students.</Text>
-      <View style={styles.form}>
-        <Field label="Event title" value={title} onChangeText={setTitle} placeholder="Calculus lecture" />
-        <Field label="Event code" value={eventId} onChangeText={setEventId} placeholder="CALC-2026-001" />
-        <PickerField label="Starts" value={formatDateTime(startDate)} onPress={() => openPicker('start')} />
-        <PickerField label="Ends" value={formatDateTime(endDate)} onPress={() => openPicker('end')} />
-        <View style={styles.chipRow}>
-          {[30, 60, 120].map((minutes) => (
-            <Pressable key={minutes} onPress={() => setEndOffset(minutes)} style={styles.chip}>
-              <Text style={styles.chipText}>+{minutes === 60 ? '1 hour' : `${minutes} min`}</Text>
-            </Pressable>
-          ))}
-        </View>
+    <View style={styles.screen}>
+      <View style={styles.modeRow}>
+        {(['create', 'manage'] as const).map((m) => (
+          <Pressable key={m} onPress={() => { setMode(m); if (m === 'manage') void loadEvents(); }} style={[styles.modeTab, mode === m && styles.modeTabActive]}>
+            <Text style={[styles.modeText, mode === m && styles.modeTextActive]}>
+              {m === 'create' ? 'Create' : `Manage (${events.length})`}
+            </Text>
+          </Pressable>
+        ))}
       </View>
-      {editTarget && <DateTimePicker value={editTarget === 'start' ? startDate : endDate} mode={Platform.OS === 'android' ? editingPart : 'datetime'} display={Platform.OS === 'android' ? 'default' : 'spinner'} onChange={onPickerChange} />}
-      <Pressable onPress={handleCreateEvent} style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
-        <Text style={styles.buttonText}>Create event</Text>
-      </Pressable>
-      {message && <Text style={styles.message}>{message}</Text>}
-      {payload && (
-        <View style={styles.resultCard}>
-          <Text style={styles.resultTitle}>Universal QR — scan with any camera</Text>
-          <Text style={styles.resultSubtitle}>iPhone Camera, Android Lens, or the app&apos;s Scan tab. Link opens /attend in browser or app.</Text>
-          <View style={styles.qrBox}><QRCode value={payload} size={220} /></View>
-          <Text style={styles.payloadText} selectable>{payload}</Text>
-        </View>
+
+      {mode === 'create' ? (
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          <ScreenHeader
+            eyebrow="TEACHER EVENT"
+            title="Create attendance QR"
+            subtitle="Name, date, time, venue, description — status starts as open."
+          />
+          <View style={styles.form}>
+            <Field label="Event name" value={title} onChangeText={setTitle} placeholder="Calculus lecture" icon="edit" />
+            <Field label="Event code" value={eventId} onChangeText={setEventId} placeholder="CALC-2026-001" icon="qr" />
+            <Field label="Venue" value={venue} onChangeText={setVenue} placeholder="Room 201, Main Bldg" icon="pin" />
+            <Field label="Description" value={description} onChangeText={setDescription} placeholder="Weekly lecture — attendance required" multiline icon="edit" />
+            <PickerField label="Starts" value={formatDateTime(startDate)} onPress={() => openPicker('start')} />
+            <PickerField label="Ends" value={formatDateTime(endDate)} onPress={() => openPicker('end')} />
+            <View style={styles.chipRow}>
+              {[30, 60, 120].map((minutes) => (
+                <Pressable key={minutes} onPress={() => setEndOffset(minutes)} style={styles.chip}>
+                  <Text style={styles.chipText}>+{minutes === 60 ? '1 hour' : `${minutes} min`}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          {editTarget && <DateTimePicker value={editTarget === 'start' ? startDate : endDate} mode={Platform.OS === 'android' ? editingPart : 'datetime'} display={Platform.OS === 'android' ? 'default' : 'spinner'} onChange={onPickerChange} />}
+          <Pressable onPress={handleCreateEvent} style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
+            <UiIcon name="plus" size={18} color={COLORS.textOnPrimary} />
+            <Text style={styles.buttonText}>Create event</Text>
+          </Pressable>
+          {message && message.startsWith('Event saved') ? (
+            <SuccessNotice title={message} />
+          ) : message ? (
+            <ErrorNotice message={message} />
+          ) : null}
+          {payload && (
+            <View style={styles.resultCard}>
+              <Text style={styles.resultTitle}>Universal QR — scan with any camera</Text>
+              <View style={styles.qrBox}><QRCode value={payload} size={220} /></View>
+              <Text style={styles.payloadText} selectable>{payload}</Text>
+            </View>
+          )}
+        </ScrollView>
+      ) : selected ? (
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          <Pressable onPress={() => setSelected(null)} style={styles.backBtn} accessibilityRole="button">
+            <UiIcon name="chevron-left" size={16} color={COLORS.accent} />
+            <Text style={styles.backText}>All events</Text>
+          </Pressable>
+          <ScreenHeader eyebrow="EVENT DETAIL" title={selected.title} />
+          <View style={styles.badgeWrap}>
+            <StatusBadge status={selected.status} />
+          </View>
+          <Text style={styles.detailLine}>Code: {selected.event_code}</Text>
+          <Text style={styles.detailLine}>
+            {selected.start_time ? new Date(selected.start_time).toLocaleString() : 'No start set'}
+            {selected.end_time ? ` → ${new Date(selected.end_time).toLocaleString()}` : ''}
+          </Text>
+          {selected.venue ? <Text style={styles.detailLine}>Venue: {selected.venue}</Text> : null}
+          {selected.description ? <Text style={styles.detailLine}>{selected.description}</Text> : null}
+
+          <Text style={styles.sectionTitle}>Edit event</Text>
+          <Field label="Event name" value={editTitle} onChangeText={setEditTitle} placeholder="Event name" />
+          <Field label="Venue" value={editVenue} onChangeText={setEditVenue} placeholder="Venue" />
+          <Field label="Description" value={editDescription} onChangeText={setEditDescription} placeholder="Description" multiline />
+          <Pressable onPress={handleSaveEdit} style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
+            <UiIcon name="check" size={18} color={COLORS.textOnPrimary} />
+            <Text style={styles.buttonText}>Save changes</Text>
+          </Pressable>
+          <Pressable onPress={handleToggleStatus} style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}>
+            <UiIcon name={selected.status === 'open' ? 'lock' : 'refresh'} size={18} color={COLORS.textPrimary} />
+            <Text style={styles.secondaryText}>
+              {selected.status === 'open' ? 'Close event (block check-ins)' : 'Reopen event'}
+            </Text>
+          </Pressable>
+          <Pressable onPress={() => handleDelete(selected)} style={({ pressed }) => [styles.dangerBtn, pressed && styles.pressed]}>
+            <UiIcon name="trash" size={18} color="#FFFFFF" />
+            <Text style={styles.dangerText}>Delete event</Text>
+          </Pressable>
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={events}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.list}
+          refreshing={listLoading}
+          onRefresh={loadEvents}
+          renderItem={({ item }) => (
+            <Pressable onPress={() => openDetail(item)} style={({ pressed }) => [styles.eventCard, pressed && styles.pressed]}>
+              <View style={styles.eventHeader}>
+                <Text style={styles.eventTitle}>{item.title}</Text>
+                <StatusBadge status={item.status} />
+              </View>
+              <Text style={styles.eventCode}>{item.event_code}</Text>
+              <Text style={styles.eventMeta}>
+                {item.start_time ? new Date(item.start_time).toLocaleDateString() : 'No date'}
+                {item.venue ? ` • ${item.venue}` : ''}
+              </Text>
+            </Pressable>
+          )}
+          ListEmptyComponent={<EmptyState title="No events yet" hint="Switch to Create to add your first event." art="no-results" />}
+        />
       )}
-    </ScrollView>
+    </View>
   );
 }
 
-function Field({ label, value, onChangeText, placeholder }: { label: string; value: string; onChangeText: (value: string) => void; placeholder: string }) {
-  return <View style={styles.field}><Text style={styles.label}>{label}</Text><TextInput value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={COLORS.textSecondary} style={styles.input} /></View>;
+function Field({ label, value, onChangeText, placeholder, multiline, icon }: { label: string; value: string; onChangeText: (value: string) => void; placeholder: string; multiline?: boolean; icon?: 'edit' | 'qr' | 'pin' }) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={[styles.inputWrap, multiline && styles.inputWrapMultiline]}>
+        {icon ? <UiIcon name={icon} size={17} color={COLORS.textSecondary} /> : null}
+        <TextInput value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={COLORS.textSecondary} style={[styles.inputInner, multiline && styles.inputMultiline]} multiline={multiline} />
+      </View>
+    </View>
+  );
 }
 
 function PickerField({ label, value, onPress }: { label: string; value: string; onPress: () => void }) {
-  return <View style={styles.field}><Text style={styles.label}>{label}</Text><Pressable onPress={onPress} style={styles.pickerField}><Text style={styles.pickerText}>{value}</Text></Pressable></View>;
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <Pressable onPress={onPress} style={styles.pickerField} accessibilityRole="button">
+        <UiIcon name="calendar" size={17} color={COLORS.textSecondary} />
+        <Text style={styles.pickerText}>{value}</Text>
+        <View style={styles.pickerChevron}>
+          <UiIcon name="chevron-right" size={16} color={COLORS.textSecondary} />
+        </View>
+      </Pressable>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: COLORS.background },
   container: { flexGrow: 1, backgroundColor: COLORS.background, padding: 24 },
+  list: { gap: 10, padding: 16, paddingBottom: 32 },
   lockScreen: { flex: 1, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center', padding: 24 },
   lockTitle: { color: COLORS.textPrimary, fontSize: 24, fontWeight: '800', marginTop: 14 },
   lockSubtitle: { color: COLORS.textSecondary, fontSize: 15, textAlign: 'center', marginTop: 8 },
-  eyebrow: { color: COLORS.accent, fontSize: 12, fontWeight: '800', letterSpacing: 1.2, marginTop: 12 },
-  title: { color: COLORS.textPrimary, fontSize: 30, fontWeight: '800', marginTop: 6 },
-  subtitle: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20, marginTop: 8, marginBottom: 24 },
-  form: { gap: 14 },
+  modeRow: { flexDirection: 'row', gap: 8, margin: 16, marginBottom: 0, backgroundColor: COLORS.card, borderRadius: 12, padding: 4 },
+  modeTab: { flex: 1, minHeight: 44, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  modeTabActive: { backgroundColor: COLORS.primary },
+  modeText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: '700' },
+  modeTextActive: { color: COLORS.textOnPrimary },
+  badgeWrap: { alignSelf: 'flex-start', marginBottom: 8 },
+  form: { gap: 14, marginTop: 4 },
   field: { gap: 7 },
   label: { color: COLORS.textPrimary, fontSize: 13, fontWeight: '700' },
-  input: { height: 50, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, color: COLORS.textPrimary, backgroundColor: COLORS.card, paddingHorizontal: 14, fontSize: 15 },
-  pickerField: { height: 50, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.card, paddingHorizontal: 14, justifyContent: 'center' },
-  pickerText: { color: COLORS.textPrimary, fontSize: 15 },
+  inputWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.card, paddingHorizontal: 12 },
+  inputWrapMultiline: { alignItems: 'flex-start', paddingVertical: 8 },
+  inputInner: { flex: 1, color: COLORS.textPrimary, fontSize: 15, paddingVertical: 12 },
+  inputMultiline: { minHeight: 64, textAlignVertical: 'top' },
+  pickerField: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.card, paddingHorizontal: 12 },
+  pickerText: { color: COLORS.textPrimary, fontSize: 15, flex: 1 },
+  pickerChevron: { opacity: 0.7 },
   chipRow: { flexDirection: 'row', gap: 8 },
-  chip: { borderRadius: 16, backgroundColor: COLORS.surface, paddingHorizontal: 12, paddingVertical: 8 },
+  chip: { borderRadius: 999, backgroundColor: COLORS.surface, paddingHorizontal: 14, minHeight: 44, justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
   chipText: { color: COLORS.textPrimary, fontSize: 12, fontWeight: '700' },
-  button: { height: 52, borderRadius: 12, backgroundColor: COLORS.accent, alignItems: 'center', justifyContent: 'center', marginTop: 22 },
+  button: { minHeight: 52, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginTop: 22, flexDirection: 'row', gap: 8 },
   buttonText: { color: COLORS.textOnPrimary, fontSize: 15, fontWeight: '800' },
-  pressed: { opacity: 0.72 },
-  message: { color: COLORS.textPrimary, textAlign: 'center', marginTop: 16, fontSize: 14 },
-  resultCard: { alignItems: 'center', backgroundColor: COLORS.card, borderRadius: 16, padding: 22, marginTop: 24, gap: 14 },
+  secondaryBtn: { minHeight: 52, borderRadius: 12, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center', marginTop: 12, flexDirection: 'row', gap: 8 },
+  secondaryText: { color: COLORS.textPrimary, fontSize: 15, fontWeight: '700' },
+  dangerBtn: { minHeight: 52, borderRadius: 12, backgroundColor: COLORS.danger, alignItems: 'center', justifyContent: 'center', marginTop: 12, flexDirection: 'row', gap: 8 },
+  dangerText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  pressed: { opacity: 0.82 },
+  resultCard: { alignItems: 'center', backgroundColor: COLORS.card, borderRadius: 16, padding: 22, marginTop: 24, gap: 14, borderWidth: 1, borderColor: COLORS.border },
   resultTitle: { color: COLORS.textPrimary, fontWeight: '700', textAlign: 'center' },
-  resultSubtitle: { color: COLORS.textSecondary, fontSize: 12, textAlign: 'center' },
-  qrBox: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 8 },
+  qrBox: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border },
   payloadText: { color: COLORS.textSecondary, fontSize: 10, textAlign: 'center' },
+  backBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 2, minHeight: 44, justifyContent: 'center' },
+  backText: { color: COLORS.accent, fontWeight: '800' },
+  sectionTitle: { color: COLORS.textPrimary, fontSize: 17, fontWeight: '800', marginTop: 24, marginBottom: 10 },
+  detailLine: { color: COLORS.textSecondary, fontSize: 14, marginTop: 4 },
+  eventCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border, gap: 6 },
+  eventHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  eventTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: '800', flex: 1 },
+  eventCode: { color: COLORS.accent, fontSize: 13, fontWeight: '700' },
+  eventMeta: { color: COLORS.textSecondary, fontSize: 12 },
 });

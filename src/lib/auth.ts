@@ -3,6 +3,9 @@ import * as Linking from 'expo-linking';
 import type { Session, User } from '@supabase/supabase-js';
 
 import { supabase } from '@/lib/supabase';
+import { getProfile, type Role } from '@/lib/profiles';
+
+export type { Role } from '@/lib/profiles';
 
 type AuthState = {
   session: Session | null;
@@ -12,7 +15,7 @@ type AuthState = {
 
 export type SignUpProfile = {
   full_name: string;
-  role: 'student' | 'teacher';
+  role: 'student' | 'teacher' | 'admin';
 };
 
 let globalSession: Session | null = null;
@@ -71,14 +74,16 @@ export async function signUp(email: string, password: string, profile?: SignUpPr
 async function syncProfileFromMetadata(user: User) {
   const metaRole = user.user_metadata?.role as string | undefined;
   const metaName = user.user_metadata?.full_name as string | undefined;
-  const validRole = metaRole === 'teacher' || metaRole === 'student' ? metaRole : null;
+  const validRole: Role | null =
+    metaRole === 'teacher' || metaRole === 'student' || metaRole === 'admin' ? metaRole : null;
   if (!validRole && !metaName) return;
-  // Fetch current profile to avoid overwriting intentional changes unnecessarily
+  // Never downgrade an admin from stale metadata.
   const { data: profile } = await supabase
     .from('profiles')
     .select('role, full_name')
     .eq('id', user.id)
     .maybeSingle();
+  if ((profile as { role?: string } | null)?.role === 'admin') return;
   const needsRoleUpdate = validRole !== null && profile?.role !== validRole;
   const needsNameUpdate = Boolean(metaName && !profile?.full_name && metaName.trim().length > 0);
   if (!needsRoleUpdate && !needsNameUpdate) return;
@@ -100,8 +105,14 @@ export async function signIn(email: string, password: string) {
 }
 
 export async function signOut() {
-  setAuth(null);
-  supabase.auth.signOut().catch(() => undefined);
+  // Proper logout: revoke the server session first, then clear local state
+  // regardless of outcome so no stale session survives on-device.
+  try {
+    const { error } = await supabase.auth.signOut();
+    if (error) return { error: error.message };
+  } finally {
+    setAuth(null);
+  }
   return { error: null };
 }
 
@@ -116,4 +127,41 @@ export async function completeAuthFromUrl(url: string) {
   setAuth(data.session);
   await syncProfileFromMetadata(data.session.user);
   return true;
+}
+
+// --- Role-based access control (RBAC) ----------------------------------------
+// Event-driven pattern: screens subscribe to profile role and react to changes.
+
+export function useRole(): { role: Role | null; loading: boolean } {
+  const { user } = useAuth();
+  const [role, setRole] = useState<Role | null>(null);
+  const [loading, setLoading] = useState(Boolean(user));
+
+  useEffect(() => {
+    let active = true;
+    if (!user) {
+      setRole(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    void getProfile(user.id).then((profile) => {
+      if (!active) return;
+      setRole(profile?.role ?? 'student');
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  return { role, loading };
+}
+
+export function canCreateEvents(role: Role | null): boolean {
+  return role === 'teacher' || role === 'admin';
+}
+
+export function canManageAll(role: Role | null): boolean {
+  return role === 'admin';
 }

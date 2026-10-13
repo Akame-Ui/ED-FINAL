@@ -16,15 +16,20 @@ import { ThemedView } from './themed-view';
 
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { COLORS } from '@/constants/colors';
+import { useRole } from '@/lib/auth';
 
 export default function AppTabs() {
+  const { role } = useRole();
+  const showTeacher = role === 'teacher' || role === 'admin';
+  const showAdmin = role === 'admin';
+
   return (
     <Tabs>
       <TabSlot style={{ height: '100%' }} />
       <TabList asChild>
         <CustomTabList>
           <TabTrigger name="index" href="/(tabs)" asChild>
-            <TabButton icon="home">Home</TabButton>
+            <TabButton icon="home">Events</TabButton>
           </TabTrigger>
           <TabTrigger name="scan" href="/(tabs)/scan" asChild>
             <TabButton icon="scan">Scan</TabButton>
@@ -32,9 +37,16 @@ export default function AppTabs() {
           <TabTrigger name="history" href={'/(tabs)/history' as RelativePathString} asChild>
             <TabButton icon="history">History</TabButton>
           </TabTrigger>
-          <TabTrigger name="teacher" href={'/(tabs)/teacher' as RelativePathString} asChild>
-            <TabButton icon="teachers">Teacher</TabButton>
-          </TabTrigger>
+          {showTeacher ? (
+            <TabTrigger name="teacher" href={'/(tabs)/teacher' as RelativePathString} asChild>
+              <TabButton icon="teachers">Teacher</TabButton>
+            </TabTrigger>
+          ) : null}
+          {showAdmin ? (
+            <TabTrigger name="admin" href={'/(tabs)/admin' as RelativePathString} asChild>
+              <TabButton icon="admin">Admin</TabButton>
+            </TabTrigger>
+          ) : null}
           <TabTrigger name="profile" href={'/(tabs)/profile' as RelativePathString} asChild>
             <TabButton icon="profile">Profile</TabButton>
           </TabTrigger>
@@ -44,7 +56,7 @@ export default function AppTabs() {
   );
 }
 
-export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlotProps & { icon: 'home' | 'teachers' | 'scan' | 'history' | 'profile' }) {
+export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlotProps & { icon: 'home' | 'teachers' | 'scan' | 'history' | 'profile' | 'admin' }) {
   return (
     <Pressable {...props} style={({ pressed }) => pressed && styles.pressed}>
       <ThemedView
@@ -60,7 +72,9 @@ export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlo
                   ? { ios: 'qrcode', android: 'qr_code_scanner', web: 'qr_code_scanner' }
                   : icon === 'history'
                     ? { ios: isFocused ? 'clock.fill' : 'clock', android: 'history', web: 'history' }
-                    : { ios: isFocused ? 'person.fill' : 'person', android: 'person', web: 'person' }
+                    : icon === 'admin'
+                      ? { ios: isFocused ? 'shield.fill' : 'shield', android: 'admin_panel_settings', web: 'admin_panel_settings' }
+                      : { ios: isFocused ? 'person.fill' : 'person', android: 'person', web: 'person' }
           }
           tintColor={isFocused ? COLORS.primary : COLORS.textSecondary}
           size={18}

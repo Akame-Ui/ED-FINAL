@@ -7,12 +7,30 @@ export type AttendanceRecord = {
   eventId: string;
   eventTitle: string;
   scannedAt: string;
+  startTime: string | null;
 };
+
+// Punctuality: checked in within the grace window after the event start
+// counts as On-Time; later check-ins are Late; events without a start
+// time show '—'.
+export const LATE_GRACE_MINUTES = 15;
+
+export type ArrivalStatus = 'On-Time' | 'Late' | '—';
+
+export function getArrivalStatus(scannedAt: string, startTime: string | null): ArrivalStatus {
+  if (!startTime) return '—';
+  const start = new Date(startTime).getTime();
+  const scanned = new Date(scannedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(scanned)) return '—';
+  return scanned <= start + LATE_GRACE_MINUTES * 60 * 1000 ? 'On-Time' : 'Late';
+}
 
 export type RegisterResult = {
   success: boolean;
   message: string;
   eventTitle?: string;
+  eventCode?: string;
+  scannedAt?: string;
 };
 
 export type TeacherEventAttendance = {
@@ -25,6 +43,7 @@ export type TeacherEventAttendance = {
   attendees: {
     studentId: string;
     studentName: string | null;
+    studentEmail: string | null;
     scannedAt: string;
   }[];
 };
@@ -95,6 +114,7 @@ export async function getTeacherEventAttendance(teacherId: string): Promise<Teac
         return {
           studentId: row.student_id,
           studentName: profile?.full_name ?? null,
+          studentEmail: profile?.email ?? null,
           scannedAt: row.scanned_at,
         };
       });
@@ -152,6 +172,29 @@ export async function getTeacherEventSummary(teacherId: string): Promise<Teacher
 }
 
 export async function registerAttendance(rawPayload: string, studentId: string): Promise<RegisterResult> {
+  // --- Unauthorized recording guard (must come first) ---
+  // 1. Must be logged in. 2. Can only record your OWN attendance.
+  // 3. Only student accounts check in (teachers/admins manage events).
+  const {
+    data: { user: authUser },
+  } = await supabase.auth.getUser();
+  if (!authUser) {
+    return { success: false, message: 'Please log in to record attendance.' };
+  }
+  if (!studentId || studentId !== authUser.id) {
+    return { success: false, message: 'You can only record your own attendance.' };
+  }
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', authUser.id)
+    .maybeSingle();
+  if ((profile as { role?: string } | null)?.role !== 'student') {
+    return { success: false, message: 'Only student accounts can record attendance.' };
+  }
+
+  // --- Invalid QR guard ---
+  // Step 3→4: parse the scanned QR, then VALIDATE against the database.
   const parsed = parseQRPayload(rawPayload);
   if (!parsed.ok) {
     return { success: false, message: parsed.message };
@@ -159,50 +202,54 @@ export async function registerAttendance(rawPayload: string, studentId: string):
 
   const payload = parsed.payload;
   const now = Date.now();
-  const start = payload.start ? new Date(payload.start).getTime() : null;
-  const end = payload.end ? new Date(payload.end).getTime() : null;
 
-  if (start !== null && Number.isNaN(start)) {
-    return { success: false, message: 'Invalid event time.' };
+  // Step 4: system validates the event — it must exist (created by
+  // teacher/admin). Unknown codes are rejected, never auto-created.
+  const foundEvent = await getEventByCode(payload.event);
+  if (!foundEvent) {
+    return {
+      success: false,
+      message: 'Invalid QR: event not found. Ask your teacher to verify the event.',
+      eventCode: payload.event,
+    };
   }
-  if (end !== null && Number.isNaN(end)) {
-    return { success: false, message: 'Invalid event time.' };
+
+  // Step 4 (cont.): closed events block new check-ins.
+  if ((foundEvent as { status?: string }).status === 'closed') {
+    return {
+      success: false,
+      message: 'This event is closed. Check-in is disabled.',
+      eventTitle: foundEvent.title,
+      eventCode: payload.event,
+    };
+  }
+
+  // Step 4 (cont.): validate the time window against the DATABASE record
+  // (authoritative), falling back to QR payload times for legacy events.
+  const dbStart = foundEvent.start_time ? new Date(foundEvent.start_time).getTime() : null;
+  const dbEnd = foundEvent.end_time ? new Date(foundEvent.end_time).getTime() : null;
+  const qrStart = payload.start ? new Date(payload.start).getTime() : null;
+  const qrEnd = payload.end ? new Date(payload.end).getTime() : null;
+  const start = dbStart ?? qrStart;
+  const end = dbEnd ?? qrEnd;
+
+  if ((start !== null && Number.isNaN(start)) || (end !== null && Number.isNaN(end))) {
+    return { success: false, message: 'Invalid event time.', eventTitle: foundEvent.title, eventCode: payload.event };
   }
   if (start !== null && end !== null && start >= end) {
-    return { success: false, message: 'Invalid event time.' };
+    return { success: false, message: 'Invalid event time.', eventTitle: foundEvent.title, eventCode: payload.event };
   }
   if (start !== null && now < start) {
-    return { success: false, message: 'Event has not started yet.' };
+    return { success: false, message: 'Event has not started yet.', eventTitle: foundEvent.title, eventCode: payload.event };
   }
   if (end !== null && now > end) {
-    return { success: false, message: 'Event has already ended.' };
+    return { success: false, message: 'Event has already ended.', eventTitle: foundEvent.title, eventCode: payload.event };
   }
 
-  const title = payload.title ?? payload.event;
-  const foundEvent = await getEventByCode(payload.event);
-  let event: { id: string; title: string } | null = foundEvent;
-
-  if (!event) {
-    const { data: newEvent, error: insertError } = await supabase
-      .from('events')
-      .insert({
-        event_code: payload.event,
-        title,
-        start_time: payload.start ?? null,
-        end_time: payload.end ?? null,
-      })
-      .select('id, title')
-      .single();
-
-    if (insertError || !newEvent) {
-      return { success: false, message: 'Could not create event.' };
-    }
-    event = newEvent;
-  }
-
+  // Step 5: system records the student's attendance.
   const { error: attendanceError } = await supabase.from('attendance').insert({
     student_id: studentId,
-    event_id: event.id,
+    event_id: foundEvent.id,
   });
 
   if (attendanceError) {
@@ -210,23 +257,27 @@ export async function registerAttendance(rawPayload: string, studentId: string):
       return {
         success: false,
         message: 'Already registered for this event.',
-        eventTitle: event.title,
+        eventTitle: foundEvent.title,
+        eventCode: payload.event,
       };
     }
-    return { success: false, message: attendanceError.message, eventTitle: event.title };
+    return { success: false, message: attendanceError.message, eventTitle: foundEvent.title, eventCode: payload.event };
   }
 
+  // Step 6: confirmation payload for the student.
   return {
     success: true,
     message: 'Attendance recorded!',
-    eventTitle: event.title,
+    eventTitle: foundEvent.title,
+    eventCode: payload.event,
+    scannedAt: new Date().toISOString(),
   };
 }
 
 export async function getAttendanceHistory(studentId: string): Promise<AttendanceRecord[]> {
   const { data, error } = await supabase
     .from('attendance')
-    .select('id, scanned_at, events (event_code, title)')
+    .select('id, scanned_at, events (event_code, title, start_time)')
     .eq('student_id', studentId)
     .order('scanned_at', { ascending: false });
 
@@ -239,5 +290,28 @@ export async function getAttendanceHistory(studentId: string): Promise<Attendanc
     eventId: row.events?.event_code ?? '',
     eventTitle: row.events?.title ?? '',
     scannedAt: row.scanned_at,
+    startTime: row.events?.start_time ?? null,
   }));
+}
+
+// Admin capability: manage/correct attendance records (delete a bad scan).
+export async function deleteAttendanceRecord(
+  attendanceId: string,
+): Promise<{ error: string | null }> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not signed in.' };
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', user.id)
+    .maybeSingle();
+  if ((profile as { role?: string } | null)?.role !== 'admin') {
+    return { error: 'Only administrators can correct attendance records.' };
+  }
+
+  const { error } = await supabase.from('attendance').delete().eq('id', attendanceId);
+  return { error: error?.message ?? null };
 }
